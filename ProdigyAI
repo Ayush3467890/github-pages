@@ -1,0 +1,84 @@
+from flask import Flask, request, jsonify
+import datetime
+from transformers import pipeline
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from apscheduler.schedulers.background import BackgroundScheduler
+
+app = Flask(__name__)
+
+# AI Model for Suggestions
+suggestion_model = pipeline('text-generation', model='gpt-3.5-turbo')
+
+# Task List
+tasks = []
+
+# Google Calendar Integration
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+SERVICE_ACCOUNT_FILE = 'path/to/your/service-account-file.json'
+
+credentials = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+calendar_service = build('calendar', 'v3', credentials=credentials)
+
+# Scheduler for Smart Reminders
+scheduler = BackgroundScheduler()
+
+def send_reminder(task):
+    # Logic to send reminders (e.g., via email or notification)
+    print(f"Reminder: Task '{task['title']}' is due at {task['deadline']}")
+
+@app.route('/add_task', methods=['POST'])
+def add_task():
+    data = request.get_json()
+    task = {
+        "id": len(tasks) + 1,
+        "title": data['title'],
+        "priority": data['priority'],
+        "deadline": datetime.datetime.strptime(data['deadline'], '%Y-%m-%d %H:%M:%S'),
+    }
+    tasks.append(task)
+    
+    # Add task to Google Calendar
+    event = {
+        'summary': task['title'],
+        'start': {'dateTime': task['deadline'].isoformat(), 'timeZone': 'UTC'},
+        'end': {'dateTime': (task['deadline'] + datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'UTC'},
+    }
+    calendar_service.events().insert(calendarId='primary', body=event).execute()
+    
+    # Schedule smart reminder
+    scheduler.add_job(send_reminder, 'date', run_date=task['deadline'] - datetime.timedelta(minutes=30), args=[task])
+    
+    return jsonify({"message": "Task added successfully!", "task": task}), 201
+
+@app.route('/get_suggestions', methods=['GET'])
+def get_suggestions():
+    query = request.args.get('query', 'How to improve productivity?')
+    suggestions = suggestion_model(query, max_length=50, num_return_sequences=1)
+    return jsonify({"suggestions": suggestions[0]['generated_text']}), 200
+
+@app.route('/list_tasks', methods=['GET'])
+def list_tasks():
+    sorted_tasks = sorted(tasks, key=lambda x: (x['priority'], x['deadline']))
+    return jsonify({"tasks": sorted_tasks}), 200
+
+@app.route('/process_input', methods=['POST'])
+def process_input():
+    data = request.get_json()
+    # Add NLP processing logic to interpret natural language input and extract task details
+    # For simplicity, assuming the input is structured as "Add task <title> with priority <priority> by <deadline>"
+    parts = data['input'].split(' ')
+    title = parts[2]
+    priority = int(parts[5])
+    deadline = ' '.join(parts[7:])
+    task = {
+        "title": title,
+        "priority": priority,
+        "deadline": deadline
+    }
+    return add_task(task)
+
+if __name__ == '__main__':
+    scheduler.start()
+    app.run(debug=True)
